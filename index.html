@@ -129,21 +129,42 @@
     </div>
   </main>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
-  const STORAGE_KEY = 'shopping-list-items';
+  const SUPABASE_URL = 'https://yanufqrvmnjzzbohpnfq.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_Aj8p_EXxccqeC1BrkoInWg_gFPhYT0T';
+  const TABLE = 'shopping_items';
+  const LEGACY_STORAGE_KEY = 'shopping-list-items';
+
+  const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
   const list = document.getElementById('list');
   const input = document.getElementById('itemInput');
   const empty = document.getElementById('empty');
   const summary = document.getElementById('summary');
 
-  let items = load();
+  let items = [];
 
-  function load() {
-    try { const v = JSON.parse(localStorage.getItem(STORAGE_KEY)); return Array.isArray(v) ? v : []; }
-    catch { return []; }
+  function showError(message, error) {
+    console.error(message, error);
+    summary.textContent = `⚠️ ${message}`;
   }
-  function save() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); } catch {}
+
+  async function load() {
+    const { data, error } = await db.from(TABLE).select('id, name, done').order('created_at');
+    if (error) return showError('목록을 불러오지 못했어요.', error);
+    items = data;
+    render();
+  }
+
+  // 예전 버전에서 로컬 스토리지에 저장한 항목을 DB로 한 번만 옮긴다.
+  async function migrateLocalItems() {
+    let legacy;
+    try { legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY)); } catch { return; }
+    if (!Array.isArray(legacy) || !legacy.length) return;
+    const rows = legacy.map(i => ({ name: String(i.name), done: !!i.done }));
+    const { error } = await db.from(TABLE).insert(rows);
+    if (error) return showError('로컬 데이터 이전에 실패했어요.', error);
+    try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch {}
   }
 
   function render() {
@@ -177,18 +198,25 @@
     summary.textContent = `전체 ${items.length}개 · 완료 ${doneCount}개 · 남음 ${items.length - doneCount}개`;
   }
 
-  function add(name) {
-    items.push({ id: Date.now() + Math.random(), name, done: false });
-    save(); render();
+  async function add(name) {
+    const { data, error } = await db.from(TABLE).insert({ name }).select('id, name, done').single();
+    if (error) return showError('항목을 추가하지 못했어요.', error);
+    items.push(data);
+    render();
   }
-  function toggle(id) {
+  async function toggle(id) {
     const item = items.find(i => i.id === id);
-    if (item) item.done = !item.done;
-    save(); render();
+    if (!item) return;
+    const { error } = await db.from(TABLE).update({ done: !item.done }).eq('id', id);
+    if (error) return showError('상태를 바꾸지 못했어요.', error);
+    item.done = !item.done;
+    render();
   }
-  function remove(id) {
+  async function remove(id) {
+    const { error } = await db.from(TABLE).delete().eq('id', id);
+    if (error) return showError('항목을 삭제하지 못했어요.', error);
     items = items.filter(i => i.id !== id);
-    save(); render();
+    render();
   }
 
   document.getElementById('addForm').addEventListener('submit', e => {
@@ -200,12 +228,17 @@
     input.focus();
   });
 
-  document.getElementById('clearDone').addEventListener('click', () => {
+  document.getElementById('clearDone').addEventListener('click', async () => {
+    const doneIds = items.filter(i => i.done).map(i => i.id);
+    if (!doneIds.length) return;
+    const { error } = await db.from(TABLE).delete().in('id', doneIds);
+    if (error) return showError('완료 항목을 삭제하지 못했어요.', error);
     items = items.filter(i => !i.done);
-    save(); render();
+    render();
   });
 
-  render();
+  summary.textContent = '불러오는 중…';
+  migrateLocalItems().then(load);
 </script>
 </body>
 </html>
